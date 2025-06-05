@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import HttpResponseRedirect
 # <HINT> Import any new Models here
-from .models import Course, Enrollment
+from .models import Course, Enrollment, Submission, Choice
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404, render, redirect
 from django.urls import reverse
@@ -47,7 +47,11 @@ def login_request(request):
         user = authenticate(username=username, password=password)
         if user is not None:
             login(request, user)
-            return redirect('onlinecourse:index')
+            # Check if the user is an admin (is_staff)
+            if user.is_staff:
+                return redirect('/admin/')
+            else:
+                return redirect('onlinecourse:index')
         else:
             context['message'] = "Invalid username or password."
             return render(request, 'onlinecourse/user_login_bootstrap.html', context)
@@ -110,7 +114,36 @@ def enroll(request, course_id):
          # Collect the selected choices from exam form
          # Add each selected choice object to the submission object
          # Redirect to show_exam_result with the submission id
-#def submit(request, course_id):
+def submit(request, course_id):
+    course = get_object_or_404(Course, pk=course_id)
+    user = request.user
+
+    if not user.is_authenticated:
+        return redirect('onlinecourse:login')
+
+    try:
+        enrollment = Enrollment.objects.get(user=user, course=course)
+    except Enrollment.DoesNotExist:
+        return HttpResponseRedirect(reverse(viewname='onlinecourse:course_details', args=(course.id,)))
+
+    # Create a new submission for this enrollment
+    submission = Submission.objects.create(enrollment=enrollment)
+
+    # Extract selected choices from the form
+    selected_choices = extract_answers(request)
+
+    # Add selected choices to the submission
+    for choice_id in selected_choices:
+        try:
+            choice = Choice.objects.get(pk=choice_id)
+            submission.choices.add(choice)
+        except Choice.DoesNotExist:
+            pass # Handle cases where a choice ID is invalid
+
+    submission.save()
+
+    # Redirect to show_exam_result with submission id
+    return HttpResponseRedirect(reverse(viewname='onlinecourse:show_exam_result', args=(course.id, submission.id,)))
 
 
 # An example method to collect the selected choices from the exam form from the request object
@@ -130,7 +163,42 @@ def extract_answers(request):
         # Get the selected choice ids from the submission record
         # For each selected choice, check if it is a correct answer or not
         # Calculate the total score
-#def show_exam_result(request, course_id, submission_id):
+def show_exam_result(request, course_id, submission_id):
+    course = get_object_or_404(Course, pk=course_id)
+    submission = get_object_or_404(Submission, pk=submission_id)
+    
+    # Get selected choices from the submission
+    selected_choices = submission.choices.all()
+    
+    # Calculate score and check if learner passed
+    total_questions = course.question_set.count()
+    correct_choices_count = 0
+    
+    # Collect correct choice IDs for easy lookup
+    correct_choice_ids = set()
+    for question in course.question_set.all():
+        for choice in question.choice_set.all():
+            if choice.is_correct:
+                correct_choice_ids.add(choice.id)
+
+    # Check selected choices against correct ones
+    for choice in selected_choices:
+        if choice.id in correct_choice_ids:
+            correct_choices_count += 1
+
+    # Calculate grade assuming each question has only one correct answer and is worth equal points
+    # This assumption might need adjustment based on actual question design
+    # For simplicity, let's assume score is out of 100
+    grade = (correct_choices_count / total_questions) * 100 if total_questions > 0 else 0
+
+    context = {
+        'course': course,
+        'submission': submission,
+        'selected_choices': selected_choices,
+        'grade': grade,
+        'choices': selected_choices # Pass selected choices to the template for highlighting
+    }
+    return render(request, 'onlinecourse/exam_result_bootstrap.html', context)
 
 
 
